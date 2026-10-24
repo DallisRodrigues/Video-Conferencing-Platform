@@ -3,7 +3,7 @@ import { useAuth } from '../contexts/AuthContext'
 
 const withAuth = (WrappedComponent) => {
   const AuthComponent = (props) => {
-    const { user, status } = useAuth()
+    const { user, status, signedOut } = useAuth()
     const location = useLocation()
 
     if (status === 'loading') {
@@ -13,7 +13,7 @@ const withAuth = (WrappedComponent) => {
         </div>
       )
     }
-    if (!user) return <Navigate to="/auth" replace state={{ from: location.pathname }} />
+    if (!user) return signedOut ? <Navigate to="/" replace /> : <Navigate to="/auth" replace state={{ from: location.pathname }} />
     return <WrappedComponent {...props} />
   }
 

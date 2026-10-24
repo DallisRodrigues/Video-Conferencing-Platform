@@ -29,9 +29,8 @@ export default function AppHeader() {
                 aria-label="Sign out"
                 title="Sign out"
                 onClick={() => {
-                  // Leave protected pages first so they don't bounce to /auth.
-                  navigate('/', { replace: true })
                   handleLogout()
+                  navigate('/', { replace: true })
                 }}
               >
                 <LogOut size={18} />

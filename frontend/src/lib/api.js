@@ -35,10 +35,10 @@ export class ApiError extends Error {
   }
 }
 
-export async function api(path, { method = 'GET', body, auth = true, signal } = {}) {
+export async function api(path, { method = 'GET', body, auth = true, token: explicitToken, keepalive = false, signal } = {}) {
   const headers = { Accept: 'application/json' }
   if (body !== undefined) headers['Content-Type'] = 'application/json'
-  const token = auth ? tokenStore.get() : null
+  const token = explicitToken ?? (auth ? tokenStore.get() : null)
   if (token) headers.Authorization = `Bearer ${token}`
 
   let res
@@ -47,6 +47,7 @@ export async function api(path, { method = 'GET', body, auth = true, signal } = 
       method,
       headers,
       body: body === undefined ? undefined : JSON.stringify(body),
+      keepalive,
       signal,
     })
   } catch (err) {

@@ -91,10 +91,20 @@ test.describe('accounts', () => {
     await page.getByRole('link', { name: 'History' }).click()
     await expect(page.getByRole('heading', { name: 'No meetings yet' })).toBeVisible()
 
+    // Slow the logout call down like a real network, then reload immediately:
+    // the user must still end up signed out, and the token must be revoked.
+    const token = await page.evaluate(() => localStorage.getItem('token'))
+    await page.route('**/api/v1/users/logout', async (route) => {
+      await new Promise((resolve) => setTimeout(resolve, 1500))
+      await route.continue()
+    })
     await page.getByRole('button', { name: 'Sign out' }).click()
     await expect(page).toHaveURL(/\/$/)
     await page.goto('/home')
     await expect(page).toHaveURL(/\/auth$/)
+    await expect
+      .poll(async () => (await page.request.get('/api/v1/users/me', { headers: { Authorization: `Bearer ${token}` } })).status())
+      .toBe(401)
     // 401/409 are the deliberate wrong-password and duplicate-username steps.
     expect(errors.filter((e) => !/status of 40[19]/.test(e))).toEqual([])
   })
