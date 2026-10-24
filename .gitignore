@@ -1,0 +1,37 @@
+# Dependencies & builds
+node_modules/
+frontend/dist/
+
+# Secrets: never commit real environment files
+.env
+.env.*
+!.env.example
+
+# Markdown other than the README (internal notes and docs)
+*.md
+!/README.md
+docs/
+
+# Unused legacy image assets
+frontend/src/assets/
+
+# Test output & reports
+frontend/test-results/
+frontend/playwright-report/
+frontend/blob-report/
+coverage/
+CLAUDE-SECURITY-*/
+
+# Local tooling
+.claude/
+.mcp.json
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/*
+!.vscode/extensions.json
+.idea/
+*.swp
+*.log
+npm-debug.log*

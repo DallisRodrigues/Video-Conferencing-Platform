@@ -1,0 +1,21 @@
+# Render Blueprint: one web service hosts the API, Socket.IO signaling and the
+# built React app from the same origin. No secrets in this file: values marked
+# `sync: false` are entered in the Render Dashboard when the Blueprint is created.
+services:
+  - type: web
+    name: video-conferencing-platform
+    runtime: node
+    plan: free
+    buildCommand: npm run render:build
+    startCommand: npm start
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: MONGODB_URI
+        sync: false
+      - key: MONGODB_DB_NAME
+        value: video_conferencing_platform
+      - key: MAX_PARTICIPANTS
+        value: "6"

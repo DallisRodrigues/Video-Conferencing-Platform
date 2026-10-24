@@ -1,0 +1,17 @@
+{
+  "name": "video-conferencing-platform",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Video Conferencing Platform: MERN + Socket.IO signaling + WebRTC video meetings",
+  "engines": {
+    "node": ">=22.12 <25"
+  },
+  "scripts": {
+    "install:all": "npm ci --prefix backend && npm ci --prefix frontend",
+    "build": "npm run build --prefix frontend",
+    "start": "npm start --prefix backend",
+    "render:build": "npm ci --prefix backend --omit=dev && npm ci --prefix frontend && npm run build --prefix frontend",
+    "test": "npm test --prefix backend && npm run test:e2e --prefix frontend",
+    "lint": "npm run lint --prefix frontend"
+  }
+}
