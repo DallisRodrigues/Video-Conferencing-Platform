@@ -32,6 +32,7 @@ export const ERRORS = {
     RATE_LIMITED: "You're doing that too often. Slow down a little.",
     INVALID_PAYLOAD: "Invalid request.",
     FORBIDDEN: "Only the host can do that.",
+    SERVER_ERROR: "Something went wrong on our side. Please try again.",
 };
 
 export const REACTIONS = ["👍", "👏", "😂", "❤️", "🎉", "😮"];

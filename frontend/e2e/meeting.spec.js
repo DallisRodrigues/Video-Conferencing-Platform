@@ -1,4 +1,6 @@
-import { expect, test } from '@playwright/test'
+import fs from 'node:fs'
+import path from 'node:path'
+import { chromium, expect, test } from '@playwright/test'
 import { expectRemoteVideoPlaying, joinMeeting, liveTrackCount, newParticipant, uniqueCode } from './helpers'
 
 const remoteTile = (page, name) => page.locator(`[data-testid="tile-remote"][data-participant="${name}"]`)
@@ -225,4 +227,201 @@ test('meeting room fits a phone screen', async ({ browser }) => {
   await page.getByTestId('toggle-chat').click()
   await expect(page.getByLabel('Send a message')).toBeInViewport()
   await context.close()
+})
+
+test.describe('join reliability', () => {
+  // Socket.IO frames: "42<ackId>[\"join-call\",…]" from the client, "43<ackId>[…]" for the server's ack.
+  const isJoin = (m) => typeof m === 'string' && m.includes('"join-call"')
+  const isAck = (m) => typeof m === 'string' && m.startsWith('43')
+
+  test('a join the server never received is retried on a fresh connection', async ({ browser }) => {
+    test.setTimeout(90_000)
+    const code = uniqueCode('lost-join')
+    const alice = await newParticipant(browser)
+    const bob = await newParticipant(browser)
+    let dropped = 0
+    await bob.page.routeWebSocket('**/socket.io/**', (ws) => {
+      const server = ws.connectToServer()
+      ws.onMessage((m) => {
+        if (isJoin(m) && dropped === 0) return void (dropped += 1)
+        server.send(m)
+      })
+    })
+    await joinMeeting(alice.page, code, 'Alice')
+    await bob.page.goto(`/${code}`)
+    await bob.page.getByLabel('Your name').fill('Bob')
+    await bob.page.getByRole('button', { name: 'Join meeting' }).click()
+
+    await expect(bob.page.getByTestId('connection-status')).toBeVisible({ timeout: 30_000 })
+    expect(dropped).toBe(1)
+    await expectRemoteVideoPlaying(alice.page, 'Bob')
+    await expectRemoteVideoPlaying(bob.page, 'Alice')
+    await expect(remoteTile(alice.page, 'Bob')).toHaveCount(1)
+    await alice.context.close()
+    await bob.context.close()
+  })
+
+  test('a lost join ack leaves no ghost participant behind', async ({ browser }) => {
+    test.setTimeout(90_000)
+    const code = uniqueCode('lost-ack')
+    const alice = await newParticipant(browser)
+    const bob = await newParticipant(browser)
+    let dropped = 0
+    await bob.page.routeWebSocket('**/socket.io/**', (ws) => {
+      const server = ws.connectToServer()
+      server.onMessage((m) => {
+        if (isAck(m) && dropped === 0) return void (dropped += 1)
+        ws.send(m)
+      })
+    })
+    await joinMeeting(alice.page, code, 'Alice')
+    await bob.page.goto(`/${code}`)
+    await bob.page.getByLabel('Your name').fill('Bob')
+    await bob.page.getByRole('button', { name: 'Join meeting' }).click()
+
+    // The server did join Bob, so Alice briefly sees him; the retry must replace, not duplicate, him.
+    await expect(bob.page.getByTestId('connection-status')).toBeVisible({ timeout: 30_000 })
+    expect(dropped).toBe(1)
+    await expectRemoteVideoPlaying(alice.page, 'Bob')
+    await expect(remoteTile(alice.page, 'Bob')).toHaveCount(1)
+    await expect(alice.page.getByTestId('participant-count')).toHaveText('2 / 6')
+    await alice.context.close()
+    await bob.context.close()
+  })
+
+  test('an unresponsive server ends in an error screen instead of loading forever', async ({ browser }) => {
+    test.setTimeout(90_000)
+    const bob = await newParticipant(browser)
+    await bob.page.routeWebSocket('**/socket.io/**', (ws) => {
+      const server = ws.connectToServer()
+      ws.onMessage((m) => !isJoin(m) && server.send(m))
+    })
+    await bob.page.goto(`/${uniqueCode('no-ack')}`)
+    await bob.page.getByLabel('Your name').fill('Bob')
+    await bob.page.getByRole('button', { name: 'Join meeting' }).click()
+    await expect(bob.page.getByRole('button', { name: 'Connecting…' })).toBeDisabled({ timeout: 15_000 })
+
+    await expect(bob.page.getByTestId('end-screen')).toContainText('not responding', { timeout: 45_000 })
+    expect(await liveTrackCount(bob.page)).toBe(0)
+    await bob.page.unrouteAll()
+    await bob.page.getByRole('button', { name: 'Try again' }).click()
+    await expect(bob.page.getByRole('button', { name: 'Join meeting' })).toBeEnabled()
+    await bob.context.close()
+  })
+
+  test('a double submit joins once', async ({ browser }) => {
+    const code = uniqueCode('double')
+    const alice = await newParticipant(browser)
+    const bob = await newParticipant(browser)
+    await joinMeeting(alice.page, code, 'Alice')
+    await bob.page.goto(`/${code}`)
+    await expect(bob.page.getByRole('button', { name: 'Join meeting' })).toBeEnabled()
+    await bob.page.getByLabel('Your name').fill('Bob')
+    await bob.page.evaluate(() => {
+      const form = document.querySelector('.lobby-form')
+      form.requestSubmit()
+      form.requestSubmit()
+    })
+    await expect(bob.page.getByTestId('connection-status')).toBeVisible()
+    await expectRemoteVideoPlaying(alice.page, 'Bob')
+    await alice.page.waitForTimeout(1500)
+    await expect(remoteTile(alice.page, 'Bob')).toHaveCount(1)
+    await expect(alice.page.getByTestId('participant-count')).toHaveText('2 / 6')
+    await alice.context.close()
+    await bob.context.close()
+  })
+})
+
+test.describe('camera framing', () => {
+  const videoStyle = (tile) =>
+    tile.locator('video').evaluate((v) => {
+      const cs = getComputedStyle(v)
+      return { fit: cs.objectFit, transform: cs.transform, tileTransform: getComputedStyle(v.parentElement).transform }
+    })
+  const liveCameraSettings = (page) =>
+    page.evaluate(() => {
+      const t = window.__tracks.find((x) => x.kind === 'video' && x.readyState === 'live' && !x.label.includes('screen'))
+      const { width, height, resizeMode } = t.getSettings()
+      return { width, height, resizeMode }
+    })
+
+  test('local and remote tiles show the whole, unscaled camera frame', async ({ browser }) => {
+    const code = uniqueCode('framing')
+    const alice = await newParticipant(browser)
+    const bob = await newParticipant(browser)
+
+    await alice.page.goto(`/${code}`)
+    await expect(alice.page.getByRole('button', { name: 'Join meeting' })).toBeEnabled()
+    expect(await videoStyle(alice.page.getByTestId('tile-local'))).toEqual({ fit: 'contain', transform: 'matrix(-1, 0, 0, 1, 0, 0)', tileTransform: 'none' })
+    expect((await liveCameraSettings(alice.page)).resizeMode).toBe('none')
+
+    await alice.page.getByLabel('Your name').fill('Alice')
+    await alice.page.getByRole('button', { name: 'Join meeting' }).click()
+    await joinMeeting(bob.page, code, 'Bob')
+    await expectRemoteVideoPlaying(bob.page, 'Alice')
+
+    expect(await videoStyle(alice.page.getByTestId('tile-local'))).toEqual({ fit: 'contain', transform: 'matrix(-1, 0, 0, 1, 0, 0)', tileTransform: 'none' })
+    expect(await videoStyle(remoteTile(bob.page, 'Alice'))).toEqual({ fit: 'contain', transform: 'none', tileTransform: 'none' })
+
+    // Turning the camera back on (a new track) keeps the uncropped capture mode.
+    await alice.page.getByTestId('toggle-camera').click()
+    await expect(remoteTile(bob.page, 'Alice').locator('.tile-placeholder')).toBeVisible()
+    await alice.page.getByTestId('toggle-camera').click()
+    await expectRemoteVideoPlaying(bob.page, 'Alice')
+    expect((await liveCameraSettings(alice.page)).resizeMode).toBe('none')
+    await alice.context.close()
+    await bob.context.close()
+  })
+
+  test('a 4:3 camera reaches the other side uncropped', async ({ browser }, testInfo) => {
+    test.setTimeout(90_000)
+    // 1280x960 frame with white bands at the top and bottom edges: Chrome used to crop this to
+    // 1280x720, cutting both bands off the outgoing track.
+    const W = 1280
+    const H = 960
+    const y = Buffer.alloc(W * H, 128)
+    y.fill(235, 0, 40 * W)
+    y.fill(235, (H - 40) * W)
+    const uv = Buffer.alloc((W / 2) * (H / 2), 128)
+    const frame = Buffer.concat([Buffer.from('FRAME\n'), y, uv, uv])
+    const file = testInfo.outputPath('camera-4x3.y4m')
+    fs.mkdirSync(path.dirname(file), { recursive: true })
+    fs.writeFileSync(file, Buffer.concat([Buffer.from(`YUV4MPEG2 W${W} H${H} F30:1 Ip A1:1 C420jpeg\n`), frame, frame]))
+
+    const camBrowser = await chromium.launch({
+      args: [
+        '--use-fake-ui-for-media-stream',
+        '--use-fake-device-for-media-stream',
+        `--use-file-for-fake-video-capture=${file}`,
+        '--disable-features=WebRtcHideLocalIpsWithMdns',
+        '--autoplay-policy=no-user-gesture-required',
+      ],
+    })
+    const code = uniqueCode('four-three')
+    const aliceCtx = await camBrowser.newContext({ baseURL: testInfo.project.use.baseURL, permissions: ['camera', 'microphone'] })
+    const alicePage = await aliceCtx.newPage()
+    const bob = await newParticipant(browser)
+    await joinMeeting(alicePage, code, 'Alice')
+    await joinMeeting(bob.page, code, 'Bob')
+    await expectRemoteVideoPlaying(bob.page, 'Alice')
+
+    const received = await remoteTile(bob.page, 'Alice')
+      .locator('video')
+      .evaluate(async (v) => {
+        // Let the encoder ramp up to the full resolution.
+        for (let i = 0; i < 40 && v.videoWidth < 1280; i++) await new Promise((r) => setTimeout(r, 250))
+        const c = document.createElement('canvas')
+        c.width = v.videoWidth
+        c.height = v.videoHeight
+        const ctx = c.getContext('2d')
+        ctx.drawImage(v, 0, 0)
+        return { ratio: v.videoWidth / v.videoHeight, topLuma: ctx.getImageData(c.width / 2, 4, 1, 1).data[0] }
+      })
+    expect(received.ratio).toBeCloseTo(4 / 3, 2)
+    expect(received.topLuma).toBeGreaterThan(200)
+
+    await aliceCtx.close()
+    await camBrowser.close()
+    await bob.context.close()
+  })
 })

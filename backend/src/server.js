@@ -11,6 +11,10 @@ if (missing.length) {
     process.exit(1);
 }
 
+if (config.ice.turnUrls.length && !config.ice.turnSecret && config.ice.turnUsername) {
+    logger.warn("TURN uses static credentials, which every meeting participant receives. Prefer TURN_SECRET for short-lived credentials.");
+}
+
 const app = createApp();
 const server = createServer(app);
 const io = connectToSocket(server);

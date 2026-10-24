@@ -5,6 +5,7 @@ import { Meeting } from "../models/meeting.model.js";
 import { findUserByToken } from "../utils/sessions.js";
 import { createLimiter } from "../utils/rateLimiter.js";
 import { logger } from "../utils/logger.js";
+import { buildIceServers } from "../utils/ice.js";
 import { cleanMultiline, normalizeDisplayName, normalizeMeetingCode } from "../utils/validation.js";
 import { RoomManager, publicParticipant } from "./roomManager.js";
 import { ERRORS, EVENTS, REACTIONS } from "./events.js";
@@ -55,7 +56,10 @@ async function recordHistory(userId, meetingCode) {
     }
 }
 
-export const connectToSocket = (server, { maxParticipants = config.maxParticipants, clientOrigins = config.clientOrigins } = {}) => {
+export const connectToSocket = (
+    server,
+    { maxParticipants = config.maxParticipants, clientOrigins = config.clientOrigins, ice = config.ice } = {}
+) => {
     const io = new Server(server, {
         cors: { origin: corsOrigin(clientOrigins), methods: ["GET", "POST"] },
         // CORS does not cover WebSocket upgrades, so check Origin here as well.
@@ -120,16 +124,23 @@ export const connectToSocket = (server, { maxParticipants = config.maxParticipan
             const name = normalizeDisplayName(payload?.name) || socket.data.user?.name;
             if (!name) return fail(ack, "INVALID_NAME");
 
-            const result = rooms.join(code, socket.id, { name, userId: socket.data.user?.id ?? null });
-            if (result.error) return fail(ack, result.error);
+            try {
+                const result = rooms.join(code, socket.id, { name, userId: socket.data.user?.id ?? null });
+                if (result.error) return fail(ack, result.error);
 
-            const { participant } = result;
-            if (payload && typeof payload.audio === "boolean") participant.audio = payload.audio;
-            if (payload && typeof payload.video === "boolean") participant.video = payload.video;
+                const { participant } = result;
+                if (payload && typeof payload.audio === "boolean") participant.audio = payload.audio;
+                if (payload && typeof payload.video === "boolean") participant.video = payload.video;
 
-            socket.join(channel(code));
-            socket.to(channel(code)).emit(EVENTS.USER_JOINED, publicParticipant(participant));
-            reply(ack, { ok: true, selfId: socket.id, room: rooms.snapshot(code) });
+                socket.join(channel(code));
+                socket.to(channel(code)).emit(EVENTS.USER_JOINED, publicParticipant(participant));
+                // TURN credentials are handed out only here, to sockets that are now members of a room.
+                reply(ack, { ok: true, selfId: socket.id, room: rooms.snapshot(code), iceServers: buildIceServers(ice) });
+            } catch (err) {
+                logger.error("join-call failed:", err.message);
+                leaveRoom("left");
+                return fail(ack, "SERVER_ERROR");
+            }
 
             if (socket.data.user) recordHistory(socket.data.user.id, code);
         });

@@ -28,6 +28,9 @@ const videoConstraints = (deviceId) => ({
   width: { ideal: 1280 },
   height: { ideal: 720 },
   frameRate: { ideal: 30, max: 30 },
+  // Prefer a native camera mode. Otherwise Chrome crops e.g. a 4:3 1280x960 sensor to 1280x720,
+  // cutting the top and bottom of the scene out of the track itself (zoomed-in look).
+  resizeMode: { ideal: 'none' },
 })
 
 const audioConstraints = (deviceId) => ({

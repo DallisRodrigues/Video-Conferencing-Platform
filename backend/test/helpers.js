@@ -6,7 +6,7 @@ import { MongoMemoryServer } from "mongodb-memory-server";
 import { io as ioClient } from "socket.io-client";
 
 // Tests run against an in-memory MongoDB and never touch Atlas.
-export async function startTestStack({ maxParticipants = 6 } = {}) {
+export async function startTestStack({ maxParticipants = 6, ice } = {}) {
     const mongo = await MongoMemoryServer.create();
     await mongoose.connect(mongo.getUri(), { dbName: "vcp_test" });
 
@@ -14,9 +14,9 @@ export async function startTestStack({ maxParticipants = 6 } = {}) {
     const { createApp } = await import("../src/app.js");
     const { connectToSocket } = await import("../src/realtime/socketManager.js");
 
-    const app = createApp({ ...config, serveFrontend: false, clientOrigins: [] });
+    const app = createApp({ ...config, ice: ice ?? config.ice, serveFrontend: false, clientOrigins: [] });
     const server = createServer(app);
-    const io = connectToSocket(server, { maxParticipants, clientOrigins: [] });
+    const io = connectToSocket(server, { maxParticipants, clientOrigins: [], ice: ice ?? config.ice });
     await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
     const url = `http://127.0.0.1:${server.address().port}`;
 

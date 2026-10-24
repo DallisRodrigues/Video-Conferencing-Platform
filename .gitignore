@@ -11,7 +11,7 @@ frontend/dist/
 *.md
 !/README.md
 docs/
-
+PROJECT_CONTEXT.md
 # Unused legacy image assets
 frontend/src/assets/
 

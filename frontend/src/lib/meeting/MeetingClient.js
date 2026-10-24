@@ -1,11 +1,13 @@
 import { io } from 'socket.io-client'
-import { API_BASE, api, tokenStore } from '../api'
+import { API_BASE, tokenStore } from '../api'
 import { getInitialTracks, getTrack, stopTrack } from '../media'
 import { EVENTS } from './events'
 
 const FALLBACK_ICE = [{ urls: ['stun:stun.l.google.com:19302'] }]
 const PREFS_KEY = 'vcp:media-prefs'
 const MAX_ICE_RESTARTS = 3
+const JOIN_TIMEOUT_MS = 10_000
+const MAX_JOIN_TIMEOUTS = 3
 
 export function loadMediaPrefs() {
   try {
@@ -38,6 +40,7 @@ export class MeetingClient {
     this.screenTrack = null
     this.prefs = loadMediaPrefs()
     this.busy = { audio: false, video: false }
+    this.joinTimeouts = 0
     this.state = {
       status: 'idle', // idle | connecting | joined | reconnecting | left | removed | error
       error: null,
@@ -274,18 +277,12 @@ export class MeetingClient {
     this.setLocal({ audio: false, video: false, screen: false, previewStream: null, audioStream: null })
   }
 
-  async join({ code, name }) {
-    if (this.socket) return
+  join({ code, name }) {
+    // Checked synchronously so a double submit can't open two sockets (two participants).
+    if (this.state.status !== 'idle') return
     this.code = code
     this.name = name
     this.set({ status: 'connecting', error: null, code })
-
-    try {
-      const { iceServers } = await api('/api/v1/ice-servers', { auth: false })
-      if (Array.isArray(iceServers) && iceServers.length) this.iceServers = iceServers
-    } catch {
-    }
-    if (this.state.status === 'left') return
 
     const socket = io(API_BASE || undefined, {
       auth: { token: tokenStore.get() || undefined },
@@ -341,17 +338,36 @@ export class MeetingClient {
 
   emitJoin() {
     const { local } = this.state
-    this.socket.timeout(10_000).emit(
+    const socket = this.socket
+    const socketId = socket.id
+    socket.timeout(JOIN_TIMEOUT_MS).emit(
       EVENTS.JOIN,
       { room: this.code, name: this.name, audio: local.audio, video: local.video || local.screen },
       (err, res) => {
-        if (this.isTerminal()) return
-        if (err) return this.set({ status: 'reconnecting', error: 'The server did not respond. Retrying…' })
+        if (this.isTerminal() || this.socket !== socket) return
+        if (err) {
+          // Dropped by a disconnect: the 'connect' handler re-joins on the new connection.
+          if (!socket.connected || socket.id !== socketId) return
+          this.joinTimeouts += 1
+          if (this.joinTimeouts >= MAX_JOIN_TIMEOUTS) {
+            this.set({ status: 'error', error: 'The meeting server is not responding. Please try again in a moment.' })
+            this.cleanup()
+            return
+          }
+          // The server may have joined us without the ack arriving; a fresh connection drops that
+          // half-joined socket server-side before we join again.
+          socket.disconnect()
+          this.set({ status: 'reconnecting', error: 'The server did not respond. Retrying…' })
+          socket.connect()
+          return
+        }
+        this.joinTimeouts = 0
         if (!res?.ok) {
           this.set({ status: 'error', error: res?.error || 'Could not join the meeting.', errorCode: res?.code })
           this.cleanup()
           return
         }
+        if (Array.isArray(res.iceServers) && res.iceServers.length) this.iceServers = res.iceServers
         const others = res.room.participants.filter((p) => p.id !== res.selfId)
         this.set({
           status: 'joined',

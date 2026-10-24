@@ -64,6 +64,59 @@ describe("joining", () => {
     });
 });
 
+describe("join outcomes", () => {
+    it("acks a duplicate join on the same socket with ALREADY_IN_ROOM and keeps one participant", async () => {
+        const a = await stack.connect();
+        assert.equal((await join(a, "dup-room", "A")).ok, true);
+        assert.equal((await join(a, "dup-room", "A")).code, "ALREADY_IN_ROOM");
+        assert.equal(stack.io.rooms.snapshot("dup-room").participants.length, 1);
+    });
+
+    it("acks SERVER_ERROR instead of leaving the join pending when room logic throws", async () => {
+        const rooms = stack.io.rooms;
+        const original = rooms.join;
+        rooms.join = () => {
+            throw new Error("boom");
+        };
+        const a = await stack.connect();
+        try {
+            const res = await join(a, "error-room", "A");
+            assert.equal(res.ok, false);
+            assert.equal(res.code, "SERVER_ERROR");
+            assert.equal(res.error.includes("boom"), false, "internal error text is not leaked");
+        } finally {
+            rooms.join = original;
+        }
+        assert.equal(rooms.roomOf(a.id), null);
+        assert.equal((await join(a, "error-room", "A")).ok, true, "the same socket can retry");
+    });
+
+    it("rolls back a half-completed join so others never keep a ghost participant", async () => {
+        const rooms = stack.io.rooms;
+        const a = await stack.connect();
+        const b = await stack.connect();
+        await join(a, "rollback-room", "A");
+
+        const original = rooms.snapshot;
+        rooms.snapshot = () => {
+            throw new Error("boom");
+        };
+        const left = nextEvent(a, "user-left");
+        let res;
+        try {
+            res = await join(b, "rollback-room", "B");
+        } finally {
+            rooms.snapshot = original;
+        }
+        assert.equal(res.code, "SERVER_ERROR");
+        assert.equal((await left).id, b.id);
+        assert.deepEqual(rooms.snapshot("rollback-room").participants.map((p) => p.name), ["A"]);
+
+        b.emit("signal", { to: a.id, candidate: null });
+        assert.equal(await noEvent(a, "signal"), true, "rolled-back socket cannot signal");
+    });
+});
+
 describe("signaling", () => {
     it("relays to the target with a server-assigned sender and drops cross-room or spoofed targets", async () => {
         const a = await stack.connect();

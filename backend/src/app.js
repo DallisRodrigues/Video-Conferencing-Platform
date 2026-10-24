@@ -56,7 +56,8 @@ export function createApp(cfg = config) {
     const iceLimiter = rateLimit({ windowMs: 60_000, limit: 60, standardHeaders: "draft-8", legacyHeaders: false });
     app.get("/api/v1/ice-servers", iceLimiter, (_req, res) => {
         res.set("Cache-Control", "no-store");
-        res.json({ iceServers: buildIceServers(cfg.ice) });
+        // Public STUN only; TURN credentials are issued to room members in the join-call ack.
+        res.json({ iceServers: buildIceServers({ ...cfg.ice, turnUrls: [] }) });
     });
 
     app.use("/api/v1/users", userRoutes);
